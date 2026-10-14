@@ -25,8 +25,10 @@ import {
   MetaObject,
   NonReducibleUnknown,
   ParameterizedObject,
+  RoutableStateId,
   SetupTypes,
   StateNodeConfig,
+  StateSchema,
   ToChildren,
   ToStateValue,
   UnknownActorLogic,
@@ -38,123 +40,150 @@ type ToParameterizedObject<
     string,
     ParameterizedObject['params'] | undefined
   >
-> = // `silentNeverType` to `never` conversion (explained in `ToProvidedActor`)
-  IsNever<TParameterizedMap> extends true
-    ? never
-    : Values<{
-        [K in keyof TParameterizedMap & string]: {
-          type: K;
-          params: TParameterizedMap[K];
-        };
-      }>;
+> = Values<{
+  [K in keyof TParameterizedMap as K & string]: {
+    type: K & string;
+    params: TParameterizedMap[K];
+  };
+}>;
 
 // at the moment we allow extra actors - ones that are not specified by `children`
 // this could be reconsidered in the future
 type ToProvidedActor<
   TChildrenMap extends Record<string, string>,
   TActors extends Record<string, UnknownActorLogic>
-> =
-  // this essentially is meant to convert a leaked `silentNeverType` to the true `never` type
-  // it shouldn't be observable but here we are
-  // we don't want to lock inner inferences for our actions with types containing this type
-  // it's used in inner inference contexts when the outer one context doesn't have inference candidates for a type parameter
-  // because it leaks here, without this condition it manages to create an inferable type that contains it
-  // the `silentNeverType` is non-inferable itself and that usually means that a containing object is non-inferable too
-  // that doesn't happen here though. However, we actually want to infer a true `never` here so our actions can't use unknown actors
-  // for that reason it's important to do the conversion here because we want to map it to something that is actually inferable
-  IsNever<TActors> extends true
-    ? never
-    : Values<{
-        [K in keyof TActors & string]: {
-          src: K;
-          logic: TActors[K];
-          id: IsNever<TChildrenMap> extends true
-            ? string | undefined
-            : K extends keyof Invert<TChildrenMap>
-              ? Invert<TChildrenMap>[K] & string
-              : string | undefined;
-        };
-      }>;
+> = Values<{
+  [K in keyof TActors as K & string]: {
+    src: K & string;
+    logic: TActors[K];
+    id: IsNever<TChildrenMap> extends true
+      ? string | undefined
+      : K extends keyof Invert<TChildrenMap>
+        ? Invert<TChildrenMap>[K] & string
+        : string | undefined;
+  };
+}>;
+
+// used to keep only StateSchema relevant keys
+// this helps with type serialization as it makes the inferred type much shorter when dealing with huge configs
+type ToStateSchema<TSchema extends StateSchema> = {
+  -readonly [K in keyof TSchema as K & ('id' | 'states')]: K extends 'states'
+    ? {
+        [SK in keyof TSchema['states']]: ToStateSchema<
+          NonNullable<TSchema['states'][SK]>
+        >;
+      }
+    : TSchema[K];
+};
 
 type RequiredSetupKeys<TChildrenMap> =
   IsNever<keyof TChildrenMap> extends true ? never : 'actors';
 
-export function setup<
+// Extract { [invokeId]: src } mappings from a machine config's invoke entries.
+// This allows createMachine to infer TChildrenMap from the invoke config
+// when types.children is not explicitly provided.
+type ExtractInvokeEntry<T> = T extends {
+  id: infer TId extends string;
+  src: infer TSrc extends string;
+}
+  ? { [K in TId]: TSrc }
+  : {};
+
+type ExtractInvokeChildren<T> = T extends readonly (infer E)[]
+  ? UnionToIntersection<ExtractInvokeEntry<E>>
+  : ExtractInvokeEntry<T>;
+
+type UnionToIntersection<U> = (U extends any ? (x: U) => void : never) extends (
+  x: infer I
+) => void
+  ? I
+  : never;
+
+type ExtractConfigChildren<TConfig> = TConfig extends {
+  invoke: infer TInvoke;
+}
+  ? ExtractInvokeChildren<TInvoke>
+  : {};
+
+type MergeChildrenMap<
+  TExplicit extends Record<string, string>,
+  TInferred extends Record<string, string>
+> = IsNever<keyof TExplicit> extends true ? TInferred : TExplicit;
+
+export type SetupReturn<
   TContext extends MachineContext,
-  TEvent extends AnyEventObject, // TODO: consider using a stricter `EventObject` here
-  TActors extends Record<string, UnknownActorLogic> = {},
-  TChildrenMap extends Record<string, string> = {},
-  TActions extends Record<
-    string,
-    ParameterizedObject['params'] | undefined
-  > = {},
-  TGuards extends Record<
-    string,
-    ParameterizedObject['params'] | undefined
-  > = {},
-  TDelay extends string = never,
-  TTag extends string = string,
-  TInput = NonReducibleUnknown,
-  TOutput extends NonReducibleUnknown = NonReducibleUnknown,
-  TEmitted extends EventObject = EventObject,
-  TMeta extends MetaObject = MetaObject
->({
-  schemas,
-  actors,
-  actions,
-  guards,
-  delays
-}: {
-  schemas?: unknown;
-  types?: SetupTypes<
+  TEvent extends AnyEventObject,
+  TActors extends Record<string, UnknownActorLogic>,
+  TChildrenMap extends Record<string, string>,
+  TActions extends Record<string, ParameterizedObject['params'] | undefined>,
+  TGuards extends Record<string, ParameterizedObject['params'] | undefined>,
+  TDelay extends string,
+  TTag extends string,
+  TInput,
+  TOutput extends NonReducibleUnknown,
+  TEmitted extends EventObject,
+  TStateMeta extends MetaObject,
+  TTransitionMeta extends MetaObject = TStateMeta
+> = {
+  extend: <
+    TExtendActions extends Record<
+      string,
+      ParameterizedObject['params'] | undefined
+    > = {},
+    TExtendGuards extends Record<
+      string,
+      ParameterizedObject['params'] | undefined
+    > = {},
+    TExtendDelays extends string = never
+  >({
+    actions,
+    guards,
+    delays
+  }: {
+    actions?: {
+      [K in keyof TExtendActions]: ActionFunction<
+        TContext,
+        TEvent,
+        TEvent,
+        TExtendActions[K],
+        ToProvidedActor<TChildrenMap, TActors>,
+        ToParameterizedObject<TActions & TExtendActions>,
+        ToParameterizedObject<TGuards & TExtendGuards>,
+        TDelay | TExtendDelays,
+        TEmitted
+      >;
+    };
+    guards?: {
+      [K in keyof TExtendGuards]: GuardPredicate<
+        TContext,
+        TEvent,
+        TExtendGuards[K],
+        ToParameterizedObject<TGuards & TExtendGuards>
+      >;
+    };
+    delays?: {
+      [K in TExtendDelays]: DelayConfig<
+        TContext,
+        TEvent,
+        ToParameterizedObject<TActions & TExtendActions>['params'],
+        TEvent
+      >;
+    };
+  }) => SetupReturn<
     TContext,
     TEvent,
+    TActors,
     TChildrenMap,
+    TActions & TExtendActions,
+    TGuards & TExtendGuards,
+    TDelay | TExtendDelays,
     TTag,
     TInput,
     TOutput,
     TEmitted,
-    TMeta
+    TStateMeta,
+    TTransitionMeta
   >;
-  actors?: {
-    // union here enforces that all configured children have to be provided in actors
-    // it makes those values required here
-    [K in keyof TActors | Values<TChildrenMap>]: K extends keyof TActors
-      ? TActors[K]
-      : never;
-  };
-  actions?: {
-    [K in keyof TActions]: ActionFunction<
-      TContext,
-      TEvent,
-      TEvent,
-      TActions[K],
-      ToProvidedActor<TChildrenMap, TActors>,
-      ToParameterizedObject<TActions>,
-      ToParameterizedObject<TGuards>,
-      TDelay,
-      TEmitted
-    >;
-  };
-  guards?: {
-    [K in keyof TGuards]: GuardPredicate<
-      TContext,
-      TEvent,
-      TGuards[K],
-      ToParameterizedObject<TGuards>
-    >;
-  };
-  delays?: {
-    [K in TDelay]: DelayConfig<
-      TContext,
-      TEvent,
-      ToParameterizedObject<TActions>['params'],
-      TEvent
-    >;
-  };
-} & {
-  [K in RequiredSetupKeys<TChildrenMap>]: unknown;
-}): {
   /**
    * Creates a state config that is strongly typed. This state config can be
    * used to create a machine.
@@ -195,7 +224,8 @@ export function setup<
       TTag,
       unknown,
       TEmitted,
-      TMeta
+      TStateMeta,
+      TTransitionMeta
     >
   >(
     config: TStateConfig
@@ -250,18 +280,29 @@ export function setup<
       TInput,
       TOutput,
       TEmitted,
-      TMeta
+      TStateMeta,
+      TTransitionMeta
+    >,
+    TResolvedChildren extends Record<string, string> = MergeChildrenMap<
+      TChildrenMap,
+      Cast<ExtractConfigChildren<TConfig>, Record<string, string>>
     >
   >(
     config: TConfig
   ) => StateMachine<
     TContext,
-    TEvent,
+    | TEvent
+    | ([RoutableStateId<TConfig>] extends [never]
+        ? never
+        : {
+            type: 'xstate.route';
+            to: RoutableStateId<TConfig>;
+          }),
     Cast<
-      ToChildren<ToProvidedActor<TChildrenMap, TActors>>,
+      ToChildren<ToProvidedActor<TResolvedChildren, TActors>>,
       Record<string, AnyActorRef | undefined>
     >,
-    ToProvidedActor<TChildrenMap, TActors>,
+    ToProvidedActor<TResolvedChildren, TActors>,
     ToParameterizedObject<TActions>,
     ToParameterizedObject<TGuards>,
     TDelay,
@@ -270,8 +311,9 @@ export function setup<
     TInput,
     TOutput,
     TEmitted,
-    TMeta,
-    TConfig
+    TStateMeta,
+    ToStateSchema<TConfig>,
+    TTransitionMeta
   >;
 
   assign: typeof assign<
@@ -327,7 +369,96 @@ export function setup<
     TEvent,
     ToProvidedActor<TChildrenMap, TActors>
   >;
-} {
+};
+
+export function setup<
+  TContext extends MachineContext,
+  TEvent extends AnyEventObject, // TODO: consider using a stricter `EventObject` here
+  TActors extends Record<string, UnknownActorLogic> = {},
+  TChildrenMap extends Record<string, string> = {},
+  TActions extends Record<string, ParameterizedObject['params'] | undefined> =
+    {},
+  TGuards extends Record<string, ParameterizedObject['params'] | undefined> =
+    {},
+  TDelay extends string = never,
+  TTag extends string = string,
+  TInput = NonReducibleUnknown,
+  TOutput extends NonReducibleUnknown = NonReducibleUnknown,
+  TEmitted extends EventObject = EventObject,
+  TStateMeta extends MetaObject = MetaObject,
+  TTransitionMeta extends MetaObject = TStateMeta
+>({
+  schemas,
+  actors,
+  actions,
+  guards,
+  delays
+}: {
+  schemas?: unknown;
+  types?: SetupTypes<
+    TContext,
+    TEvent,
+    TChildrenMap,
+    TTag,
+    TInput,
+    TOutput,
+    TEmitted,
+    TStateMeta,
+    TTransitionMeta
+  >;
+  actors?: {
+    // union here enforces that all configured children have to be provided in actors
+    // it makes those values required here
+    [K in keyof TActors | Values<TChildrenMap>]: K extends keyof TActors
+      ? TActors[K]
+      : never;
+  };
+  actions?: {
+    [K in keyof TActions]: ActionFunction<
+      TContext,
+      TEvent,
+      TEvent,
+      TActions[K],
+      ToProvidedActor<TChildrenMap, TActors>,
+      ToParameterizedObject<TActions>,
+      ToParameterizedObject<TGuards>,
+      TDelay,
+      TEmitted
+    >;
+  };
+  guards?: {
+    [K in keyof TGuards]: GuardPredicate<
+      TContext,
+      TEvent,
+      TGuards[K],
+      ToParameterizedObject<TGuards>
+    >;
+  };
+  delays?: {
+    [K in TDelay]: DelayConfig<
+      TContext,
+      TEvent,
+      ToParameterizedObject<TActions>['params'],
+      TEvent
+    >;
+  };
+} & {
+  [K in RequiredSetupKeys<TChildrenMap>]: unknown;
+}): SetupReturn<
+  TContext,
+  TEvent,
+  TActors,
+  TChildrenMap,
+  TActions,
+  TGuards,
+  TDelay,
+  TTag,
+  TInput,
+  TOutput,
+  TEmitted,
+  TStateMeta,
+  TTransitionMeta
+> {
   return {
     assign,
     sendTo,
@@ -349,6 +480,14 @@ export function setup<
           guards,
           delays
         }
-      )
+      ),
+    extend: (extended) =>
+      setup({
+        schemas,
+        actors,
+        actions: { ...actions, ...extended.actions },
+        guards: { ...guards, ...extended.guards },
+        delays: { ...delays, ...extended.delays }
+      } as any)
   };
 }

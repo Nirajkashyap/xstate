@@ -9,6 +9,8 @@ it('works with `useSelector(…)` (@xstate/vue)', async () => {
   const countEl = getByTestId('count');
   const incrementEl = getByTestId('increment');
 
+  expect(countEl.textContent).toBe('0');
+
   await fireEvent.click(incrementEl);
   expect(countEl.textContent).toBe('1');
 });
@@ -19,6 +21,8 @@ it('works with `useActor(…)` (@xstate/vue)', async () => {
   const countEl = getByTestId('count');
   const incrementEl = getByTestId('increment');
 
+  expect(countEl.textContent).toBe('0');
+
   await fireEvent.click(incrementEl);
   expect(countEl.textContent).toBe('1');
 });
@@ -28,6 +32,8 @@ it('works with `useActorRef(…)` (@xstate/vue)', async () => {
 
   const countEl = getByTestId('count');
   const incrementEl = getByTestId('increment');
+
+  expect(countEl.textContent).toBe('0');
 
   await fireEvent.click(incrementEl);
   expect(countEl.textContent).toBe('1');

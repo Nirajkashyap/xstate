@@ -1,6 +1,3 @@
-# eslint
-.eslintcache
-
 # Coverage directory used by tools like istanbul
 coverage
 .nyc_output
@@ -38,3 +35,6 @@ api/
 
 # pnpm
 .pnpm-lock.yaml
+
+.claude
+.scratch

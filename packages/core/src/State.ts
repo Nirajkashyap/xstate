@@ -104,7 +104,7 @@ interface MachineSnapshotBase<
 
   historyValue: Readonly<HistoryValue<TContext, TEvent>>;
   /** The enabled state nodes representative of the state value. */
-  _nodes: Array<StateNode<TContext, TEvent>>;
+  _nodes: Array<StateNode<TContext, TEvent, any, any>>;
   /** An object mapping actor names to spawned/invoked actors. */
   children: TChildren;
 
@@ -149,17 +149,17 @@ interface ActiveMachineSnapshot<
   TTag extends string,
   TOutput,
   TMeta extends MetaObject,
-  TConfig extends StateSchema
+  TStateSchema extends StateSchema
 > extends MachineSnapshotBase<
-    TContext,
-    TEvent,
-    TChildren,
-    TStateValue,
-    TTag,
-    TOutput,
-    TMeta,
-    TConfig
-  > {
+  TContext,
+  TEvent,
+  TChildren,
+  TStateValue,
+  TTag,
+  TOutput,
+  TMeta,
+  TStateSchema
+> {
   status: 'active';
   output: undefined;
   error: undefined;
@@ -173,17 +173,17 @@ interface DoneMachineSnapshot<
   TTag extends string,
   TOutput,
   TMeta extends MetaObject,
-  TConfig extends StateSchema
+  TStateSchema extends StateSchema
 > extends MachineSnapshotBase<
-    TContext,
-    TEvent,
-    TChildren,
-    TStateValue,
-    TTag,
-    TOutput,
-    TMeta,
-    TConfig
-  > {
+  TContext,
+  TEvent,
+  TChildren,
+  TStateValue,
+  TTag,
+  TOutput,
+  TMeta,
+  TStateSchema
+> {
   status: 'done';
   output: TOutput;
   error: undefined;
@@ -197,17 +197,17 @@ interface ErrorMachineSnapshot<
   TTag extends string,
   TOutput,
   TMeta extends MetaObject,
-  TConfig extends StateSchema
+  TStateSchema extends StateSchema
 > extends MachineSnapshotBase<
-    TContext,
-    TEvent,
-    TChildren,
-    TStateValue,
-    TTag,
-    TOutput,
-    TMeta,
-    TConfig
-  > {
+  TContext,
+  TEvent,
+  TChildren,
+  TStateValue,
+  TTag,
+  TOutput,
+  TMeta,
+  TStateSchema
+> {
   status: 'error';
   output: undefined;
   error: unknown;
@@ -221,17 +221,17 @@ interface StoppedMachineSnapshot<
   TTag extends string,
   TOutput,
   TMeta extends MetaObject,
-  TConfig extends StateSchema
+  TStateSchema extends StateSchema
 > extends MachineSnapshotBase<
-    TContext,
-    TEvent,
-    TChildren,
-    TStateValue,
-    TTag,
-    TOutput,
-    TMeta,
-    TConfig
-  > {
+  TContext,
+  TEvent,
+  TChildren,
+  TStateValue,
+  TTag,
+  TOutput,
+  TMeta,
+  TStateSchema
+> {
   status: 'stopped';
   output: undefined;
   error: undefined;
@@ -245,7 +245,7 @@ export type MachineSnapshot<
   TTag extends string,
   TOutput,
   TMeta extends MetaObject,
-  TConfig extends StateSchema
+  TStateSchema extends StateSchema
 > =
   | ActiveMachineSnapshot<
       TContext,
@@ -255,7 +255,7 @@ export type MachineSnapshot<
       TTag,
       TOutput,
       TMeta,
-      TConfig
+      TStateSchema
     >
   | DoneMachineSnapshot<
       TContext,
@@ -265,7 +265,7 @@ export type MachineSnapshot<
       TTag,
       TOutput,
       TMeta,
-      TConfig
+      TStateSchema
     >
   | ErrorMachineSnapshot<
       TContext,
@@ -275,7 +275,7 @@ export type MachineSnapshot<
       TTag,
       TOutput,
       TMeta,
-      TConfig
+      TStateSchema
     >
   | StoppedMachineSnapshot<
       TContext,
@@ -285,7 +285,7 @@ export type MachineSnapshot<
       TTag,
       TOutput,
       TMeta,
-      TConfig
+      TStateSchema
     >;
 
 const machineSnapshotMatches = function matches(
@@ -466,7 +466,7 @@ export function getPersistedSnapshot<
     childrenJson[id as keyof typeof childrenJson] = {
       snapshot: child.getPersistedSnapshot(options),
       src: child.src,
-      systemId: child._systemId,
+      systemId: child.systemId,
       syncSnapshot: child._syncSnapshot
     };
   }

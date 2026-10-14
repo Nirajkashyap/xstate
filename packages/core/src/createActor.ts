@@ -12,6 +12,7 @@ import { symbolObservable } from './symbolObservable.ts';
 import { AnyActorSystem, Clock, createSystem } from './system.ts';
 
 // those are needed to make JSDoc `@link` work properly
+// oxlint-disable no-unused-vars
 import type {
   fromObservable,
   fromEventObservable
@@ -20,6 +21,7 @@ import type { fromCallback } from './actors/callback.ts';
 import type { fromPromise } from './actors/promise.ts';
 import type { fromTransition } from './actors/transition.ts';
 import type { createMachine } from './createMachine.ts';
+// oxlint-enable no-unused-vars
 
 export let executingCustomAction: boolean = false;
 
@@ -33,6 +35,7 @@ import type {
   EventFromLogic,
   InputFrom,
   IsNotNever,
+  Readable,
   Snapshot,
   SnapshotFrom
 } from './types.ts';
@@ -73,10 +76,11 @@ const defaultOptions = {
  * its behavior based on the events it receives, which can cause effects outside
  * of the actor. When you run a state machine, it becomes an actor.
  */
-export class Actor<TLogic extends AnyActorLogic>
-  implements
-    ActorRef<SnapshotFrom<TLogic>, EventFromLogic<TLogic>, EmittedFrom<TLogic>>
-{
+export class Actor<TLogic extends AnyActorLogic> implements ActorRef<
+  SnapshotFrom<TLogic>,
+  EventFromLogic<TLogic>,
+  EmittedFrom<TLogic>
+> {
   /** The current internal state of the actor. */
   private _snapshot!: SnapshotFrom<TLogic>;
   /**
@@ -120,7 +124,7 @@ export class Actor<TLogic extends AnyActorLogic>
     EmittedFrom<TLogic>
   >;
 
-  private _systemId: string | undefined;
+  public systemId: string | undefined;
 
   /** The globally unique process ID for this invocation. */
   public sessionId: string;
@@ -246,7 +250,7 @@ export class Actor<TLogic extends AnyActorLogic>
     });
 
     if (systemId) {
-      this._systemId = systemId;
+      this.systemId = systemId;
       this.system._set(systemId, this);
     }
 
@@ -486,6 +490,28 @@ export class Actor<TLogic extends AnyActorLogic>
     };
   }
 
+  public select<TSelected>(
+    selector: (snapshot: SnapshotFrom<TLogic>) => TSelected,
+    equalityFn: (a: TSelected, b: TSelected) => boolean = Object.is
+  ): Readable<TSelected> {
+    return {
+      subscribe: (observerOrFn) => {
+        const observer = toObserver(observerOrFn);
+        const snapshot = this.getSnapshot();
+        let previousSelected = selector(snapshot);
+
+        return this.subscribe((snapshot) => {
+          const nextSelected = selector(snapshot);
+          if (!equalityFn(previousSelected, nextSelected)) {
+            previousSelected = nextSelected;
+            observer.next?.(nextSelected);
+          }
+        });
+      },
+      get: () => selector(this.getSnapshot())
+    };
+  }
+
   /** Starts the Actor from the initial state */
   public start(): this {
     if (this._processingStatus === ProcessingStatus.Running) {
@@ -508,8 +534,8 @@ export class Actor<TLogic extends AnyActorLogic>
     }
 
     this.system._register(this.sessionId, this);
-    if (this._systemId) {
-      this.system._set(this._systemId, this);
+    if (this.systemId) {
+      this.system._set(this.systemId, this);
     }
     this._processingStatus = ProcessingStatus.Running;
 
@@ -635,12 +661,14 @@ export class Actor<TLogic extends AnyActorLogic>
       }
     }
     this.observers.clear();
+    this.eventListeners.clear();
   }
   private _reportError(err: unknown): void {
     if (!this.observers.size) {
       if (!this._parent) {
         reportUnhandledError(err);
       }
+      this.eventListeners.clear();
       return;
     }
     let reportError = false;
@@ -655,6 +683,7 @@ export class Actor<TLogic extends AnyActorLogic>
       }
     }
     this.observers.clear();
+    this.eventListeners.clear();
     if (reportError) {
       reportUnhandledError(err);
     }
@@ -703,7 +732,12 @@ export class Actor<TLogic extends AnyActorLogic>
     if (this._processingStatus === ProcessingStatus.Stopped) {
       // do nothing
       if (isDevelopment) {
-        const eventString = JSON.stringify(event);
+        let eventString: string;
+        try {
+          eventString = JSON.stringify(event);
+        } catch {
+          eventString = String(event);
+        }
 
         console.warn(
           `Event "${event.type}" was sent to stopped actor "${this.id} (${this.sessionId})". This actor has already reached its final state, and will not transition.\nEvent: ${eventString}`

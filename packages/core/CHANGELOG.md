@@ -1,5 +1,442 @@
 # xstate
 
+## 5.33.2
+
+### Patch Changes
+
+- [#5718](https://github.com/statelyai/xstate/pull/5718) [`015dc23`](https://github.com/statelyai/xstate/commit/015dc23d82fbb8f98e483281503cf97ea9974b2b) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Fixed metadata types in generic history values, snapshot nodes, and directed graph results. These containers now accept arbitrary state and transition metadata consistently with `AnyStateNode` and `AnyTransitionDefinition`, avoiding unsafe-type warnings when inspecting machines through generic APIs.
+
+## 5.33.1
+
+### Patch Changes
+
+- [#5712](https://github.com/statelyai/xstate/pull/5712) [`8614c4d`](https://github.com/statelyai/xstate/commit/8614c4d4bfb6a5b7340acd33ca462d89b9527708) Thanks [@crishoj](https://github.com/crishoj)! - `AnyStateNode` and `AnyStateNodeDefinition` now widen the `TStateMeta` and `TTransitionMeta` parameters that were added to `StateNode` and `StateNodeDefinition` in 5.33.0. Those parameters default to `MetaObject`, while the nodes of an `AnyStateMachine` have them as `any`, so tooling that tracks `any` (such as `@typescript-eslint`'s `no-unsafe-argument` and `no-unsafe-return`) reported every node read off an untyped machine as unsafe:
+  
+  ```ts
+  declare const machine: AnyStateMachine;
+  
+  // StateNode<any, any, any, any> passed to StateNode<any, any, MetaObject, MetaObject>
+  takesStateNode(machine.root);
+  ```
+  
+  `AnyTransitionDefinition` was widened along with the new parameters; these two were missed.
+
+## 5.33.0
+
+### Minor Changes
+
+- [#5700](https://github.com/statelyai/xstate/pull/5700) [`6d8c317`](https://github.com/statelyai/xstate/commit/6d8c317cf6d35b30e498007cc11a22be4c439c25) Thanks [@davidkpiano](https://github.com/davidkpiano)! - State and transition metadata can now use separate types:
+  
+  ```ts
+  const machine = setup({
+    types: {
+      meta: {} as { label: string },
+      transitionMeta: {} as { trackingId: number }
+    }
+  }).createMachine({
+    meta: { label: 'Root' },
+    on: {
+      NEXT: { meta: { trackingId: 42 } }
+    }
+  });
+  ```
+  
+  When `transitionMeta` is omitted, `types.meta` continues to apply its type to
+  both state and transition metadata.
+
+## 5.32.6
+
+### Patch Changes
+
+- [#5678](https://github.com/statelyai/xstate/pull/5678) [`397b425`](https://github.com/statelyai/xstate/commit/397b42536f53b899e6914219ac829616d5100823) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Machine snapshots now retain their machine-specific methods when initialization fails, so methods such as `snapshot.matches(...)` remain available on error snapshots.
+
+## 5.32.5
+
+### Patch Changes
+
+- [#5603](https://github.com/statelyai/xstate/pull/5603) [`345e04c`](https://github.com/statelyai/xstate/commit/345e04ce66963c2a5a2a879bb4928a1b179de7f6) Thanks [@xianjianlf2](https://github.com/xianjianlf2)! - Sending an event to a stopped actor no longer throws when the event contains unserializable data (e.g. circular references). Previously, the development-only warning that an event was sent to a stopped actor used `JSON.stringify` on the event, which could throw and mask the intended warning. The warning is now emitted safely regardless of the event's contents.
+
+## 5.32.4
+
+### Patch Changes
+
+- [#5589](https://github.com/statelyai/xstate/pull/5589) [`e913eeb`](https://github.com/statelyai/xstate/commit/e913eebb655b55440b2971f791fbf079a0e5d7ad) Thanks [@spokodev](https://github.com/spokodev)! - Fixed a bug where targeting a history state that is a direct child of a `parallel` state would silently do nothing when that parallel state had not been visited yet and the history state had no default target. The machine now enters the parallel state's initial configuration, matching the behavior of history states inside compound states.
+
+  ```ts
+  const machine = createMachine({
+    initial: 'off',
+    states: {
+      off: { on: { GO: 'on.hist' } },
+      on: {
+        type: 'parallel',
+        states: {
+          regA: { initial: 'a1', states: { a1: {}, a2: {} } },
+          regB: { initial: 'b1', states: { b1: {}, b2: {} } },
+          hist: { type: 'history', history: 'deep' }
+        }
+      }
+    }
+  });
+
+  const actor = createActor(machine).start();
+  actor.send({ type: 'GO' });
+  actor.getSnapshot().value; // { on: { regA: 'a1', regB: 'b1' } }
+  ```
+
+## 5.32.3
+
+### Patch Changes
+
+- [#5575](https://github.com/statelyai/xstate/pull/5575) [`830db8b`](https://github.com/statelyai/xstate/commit/830db8b6b4ac81331bdcae44aa7ec522fa959960) Thanks [@JSap0914](https://github.com/JSap0914)! - Fixed `initialTransition` (and `transition`) throwing `"Actor with system ID '...' already exists"` when the machine contains an `invoke` with a `systemId`.
+
+  **Root cause:** `createInertActorScope` used `createActor(logic)` internally, which eagerly ran `getInitialSnapshot` during construction and registered any `systemId`-carrying child actors in the system. When the caller then ran `getInitialSnapshot` (or `transition`) via the returned scope, the same system was reused, causing the duplicate-registration error.
+
+  **Fix:** After creating the internal actor, `createInertActorScope` now replaces the actor's system reference with a freshly-created system. Child actors spawned by the subsequent caller-driven `getInitialSnapshot` / `transition` invocation therefore register into a clean system with no pre-existing entries.
+
+  ```ts
+  const machine = createMachine({
+    initial: 'idle',
+    states: {
+      idle: {
+        invoke: {
+          src: fromPromise(async () => 42),
+          systemId: 'myActor' // previously caused: "Actor with system ID 'myActor' already exists"
+        }
+      }
+    }
+  });
+
+  // Now works correctly — returns [snapshot, actions] without throwing
+  const [snapshot, actions] = initialTransition(machine);
+  ```
+
+- [#5585](https://github.com/statelyai/xstate/pull/5585) [`a551a2b`](https://github.com/statelyai/xstate/commit/a551a2b81fbbe05f8ffc5b3cdaea503d01ce477e) Thanks [@RubenFricke](https://github.com/RubenFricke)! - Add missing https:// protocol to the Stately Studio link in the README
+
+## 5.32.2
+
+### Patch Changes
+
+- [#5548](https://github.com/statelyai/xstate/pull/5548) [`8a53531`](https://github.com/statelyai/xstate/commit/8a5353105522aaee7a4f7031136372edec327a79) Thanks [@JSap0914](https://github.com/JSap0914)! - fix(core): fall back to wildcard event descriptors when an exact descriptor's guard fails
+
+  When a state has both an exact event descriptor (e.g. `"foo.bar"`) and a matching wildcard descriptor (e.g. `"foo.*"`), transitions from the exact descriptor are now tried first; if all their guards fail, matching wildcard descriptor transitions are tried as fallback. Previously, the presence of an exact match would prevent any wildcard fallback from being considered, leaving the machine in its current state when the exact descriptor's guard failed.
+
+## 5.32.1
+
+### Patch Changes
+
+- [#5516](https://github.com/statelyai/xstate/pull/5516) [`41c0a5a`](https://github.com/statelyai/xstate/commit/41c0a5a2878713bde019c61099f9486fae2c70f8) Thanks [@joshuaellis](https://github.com/joshuaellis)! - fix(core): resolve children snapshot union pollution for typed invoke
+
+## 5.32.0
+
+### Minor Changes
+
+- [#5512](https://github.com/statelyai/xstate/pull/5512) [`063416d`](https://github.com/statelyai/xstate/commit/063416db859581b91fd661ae1a89b75a37fffa69) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Export `InspectedTransitionEvent` from `xstate`.
+
+## 5.31.1
+
+### Patch Changes
+
+- [#5525](https://github.com/statelyai/xstate/pull/5525) [`f79ea13`](https://github.com/statelyai/xstate/commit/f79ea13febe44956d309811a64b9b79f4f3d9295) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Fixed route transition guards so named guards registered with `setup({ guards })` are resolved for `route.guard`.
+
+  ```ts
+  const machine = setup({
+    guards: {
+      isReady: ({ context }) => context.ready
+    }
+  }).createMachine({
+    states: {
+      review: {
+        id: 'review',
+        route: {
+          guard: 'isReady'
+        }
+      }
+    }
+  });
+  ```
+
+## 5.31.0
+
+### Minor Changes
+
+- [#5429](https://github.com/statelyai/xstate/pull/5429) [`9d9c1fe`](https://github.com/statelyai/xstate/commit/9d9c1fe9df43936aa6ab43a4694645a6966ace12) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Add `mapState(snapshot, mapper)` to map a snapshot to values based on active state(s).
+
+  ```ts
+  import { mapState } from 'xstate';
+
+  const results = mapState(snapshot, {
+    states: {
+      loading: { map: () => 'Loading...' },
+      success: { map: (snap) => snap.context.data },
+      error: { map: (snap) => snap.context.error.message }
+    }
+  });
+
+  console.log(results);
+  // E.g. if snapshot.value === 'loading', then:
+  // [
+  //   { stateNode: { key: 'loading' }, result: 'Loading...' }
+  // ]
+  ```
+
+- [#5430](https://github.com/statelyai/xstate/pull/5430) [`e543599`](https://github.com/statelyai/xstate/commit/e5435993b2dee17c0808c2997665df696865aebd) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Add `maxIterations` option to configure the maximum number of microsteps allowed before throwing an infinite loop error. The default is `Infinity` (no limit) to avoid breaking existing machines.
+
+  You can configure it when creating a machine:
+
+  ```ts
+  const machine = createMachine({
+    // ... machine config
+    options: {
+      maxIterations: 1000 // set a limit to enable infinite loop detection
+    }
+  });
+  ```
+
+## 5.30.0
+
+### Minor Changes
+
+- [#5493](https://github.com/statelyai/xstate/pull/5493) [`871857d`](https://github.com/statelyai/xstate/commit/871857d730b7c333728da2b17bc36844697e8f88) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Add a `filterEvents` option to `xstate/graph` traversal helpers and
+  `createTestModel(...)` to control which events should be explored from each
+  state.
+
+  This makes it possible to opt into enabled-only traversal for machine snapshots,
+  such as when you only want to explore events that currently pass guards:
+
+  ```ts
+  import { createTestModel } from 'xstate/graph';
+
+  const model = createTestModel(machine);
+
+  const paths = model.getSimplePaths({
+    filterEvents: (state, event) => state.can(event)
+  });
+  ```
+
+## 5.29.0
+
+### Minor Changes
+
+- [#5299](https://github.com/statelyai/xstate/pull/5299) [`ca8306f`](https://github.com/statelyai/xstate/commit/ca8306f865475fa0404c419730a24e3a5e392521) Thanks [@Uniqen](https://github.com/Uniqen)! - Add `actor.select(selector, equalityFn?)` method to derive a `Readable<TSelected>` from an actor's snapshot. The returned object has `.subscribe()` (only emits when the selected value changes, using `Object.is` by default) and `.get()` for synchronous access.
+
+  ```ts
+  const actor = createActor(machine);
+  actor.start();
+
+  const count = actor.select((snap) => snap.context.count);
+
+  count.get(); // current value
+
+  count.subscribe((value) => {
+    console.log(value); // only fires when count changes
+  });
+  ```
+
+## 5.28.0
+
+### Minor Changes
+
+- [#4184](https://github.com/statelyai/xstate/pull/4184) [`a741fe7`](https://github.com/statelyai/xstate/commit/a741fe75901d3c4f08314e7c6d888bcb37866c04) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Added routable states. States with `route: {}` and an explicit `id` can be navigated to from anywhere via a single `{ type: 'xstate.route', to: '#id' }` event.
+
+  ```ts
+  const machine = setup({}).createMachine({
+    id: 'app',
+    initial: 'home',
+    states: {
+      home: { id: 'home', route: {} },
+      dashboard: {
+        initial: 'overview',
+        states: {
+          overview: { id: 'overview', route: {} },
+          settings: { id: 'settings', route: {} }
+        }
+      }
+    }
+  });
+
+  const actor = createActor(machine).start();
+
+  // Route directly to deeply nested state from anywhere
+  actor.send({ type: 'xstate.route', to: '#settings' });
+  ```
+
+  Routes support guards for conditional navigation:
+
+  ```ts
+  settings: {
+    id: 'settings',
+    route: {
+      guard: ({ context }) => context.role === 'admin'
+    }
+  }
+  ```
+
+### Patch Changes
+
+- [#5464](https://github.com/statelyai/xstate/pull/5464) [`ad809a0`](https://github.com/statelyai/xstate/commit/ad809a0a7084f57a30a47aade90b83caa2eb65d9) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Fix: export types so setup() declaration emit works (fixes #5462)
+
+## 5.27.0
+
+### Minor Changes
+
+- [#5457](https://github.com/statelyai/xstate/pull/5457) [`287b51e`](https://github.com/statelyai/xstate/commit/287b51eb80abc521f8c35fa73df177a0b9dfd3bc) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Add `getInitialMicrosteps(…)` and `getMicrosteps(…)` functions that return an array of `[snapshot, actions]` tuples for each microstep in a transition.
+
+  ```ts
+  import { createMachine, getInitialMicrosteps, getMicrosteps } from 'xstate';
+
+  const machine = createMachine({
+    initial: 'a',
+    states: {
+      a: {
+        entry: () => console.log('enter a'),
+        on: {
+          NEXT: 'b'
+        }
+      },
+      b: {
+        entry: () => console.log('enter b'),
+        always: 'c'
+      },
+      c: {}
+    }
+  });
+
+  // Get microsteps from initial transition
+  const initialMicrosteps = getInitialMicrosteps(machine);
+  // Returns: [
+  //  [snapshotA, [entryActionA]]
+  // ]
+
+  // Get microsteps from a transition
+  const microsteps = getMicrosteps(machine, initialMicrosteps[0][0], {
+    type: 'NEXT'
+  });
+  // Returns: [
+  //  [snapshotB, [entryActionB]],
+  //  [snapshotC, []]
+  // ]
+
+  // Each microstep is a tuple of [snapshot, actions]
+  for (const [snapshot, actions] of microsteps) {
+    console.log('State:', snapshot.value);
+    console.log('Actions:', actions.length);
+  }
+  ```
+
+## 5.26.0
+
+### Minor Changes
+
+- [#5406](https://github.com/statelyai/xstate/pull/5406) [`703c3a1`](https://github.com/statelyai/xstate/commit/703c3a109c824f2334ede31d8428e923d2727e6e) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Add `getNextTransitions(state)` utility to get all transitions available from current `state`.
+
+  ```ts
+  import { getNextTransitions } from 'xstate';
+
+  // ...
+
+  const state = actor.getSnapshot();
+  const transitions = getNextTransitions(state);
+
+  transitions.forEach((t) => {
+    console.log(`Event: ${t.eventType}, Source: ${t.source.key}`);
+  });
+  ```
+
+## 5.25.1
+
+### Patch Changes
+
+- [#5440](https://github.com/statelyai/xstate/pull/5440) [`e36e299`](https://github.com/statelyai/xstate/commit/e36e299a319bc8d0f124f0435b30f095cbbd0ce6) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Fix `systemId` cleanup for nested children on `stopChild`
+
+## 5.25.0
+
+### Minor Changes
+
+- [#5422](https://github.com/statelyai/xstate/pull/5422) [`329297b`](https://github.com/statelyai/xstate/commit/329297b3bf859668ed1dfc260c14e773a0413fd4) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Add partial descriptor support to `assertEvent(…)`
+
+  ```ts
+  // Matches any event with a type that starts with `FEEDBACK.`
+  assertEvent(event, 'FEEDBACK.*');
+  ```
+
+### Patch Changes
+
+- [#5420](https://github.com/statelyai/xstate/pull/5420) [`2eb8274`](https://github.com/statelyai/xstate/commit/2eb82745dbdf4ac8dfbcc3c426ed4d81c732844b) Thanks [@assertnotnull](https://github.com/assertnotnull)! - Fix a bug in Cordova when iterating an empty Map
+
+## 5.24.0
+
+### Minor Changes
+
+- [#5371](https://github.com/statelyai/xstate/pull/5371) [`b8ec3b1`](https://github.com/statelyai/xstate/commit/b8ec3b153fbacae078c03cd07678271e0456679a) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Add `setup.extend()` method to incrementally extend machine setup configurations with additional actions, guards, and delays. This enables composable and reusable machine setups where extended actions, guards, and delays can reference base actions, guards, and delays and support chaining multiple extensions:
+
+  ```ts
+  import { setup, not, and } from 'xstate';
+
+  const baseSetup = setup({
+    guards: {
+      isAuthenticated: () => true,
+      hasPermission: () => false
+    }
+  });
+
+  const extendedSetup = baseSetup.extend({
+    guards: {
+      // Type-safe guard references
+      isUnauthenticated: not('isAuthenticated'),
+      canAccess: and(['isAuthenticated', 'hasPermission'])
+    }
+  });
+
+  // Both base and extended guards are available
+  extendedSetup.createMachine({
+    on: {
+      LOGIN: {
+        guard: 'isAuthenticated',
+        target: 'authenticated'
+      },
+      LOGOUT: {
+        guard: 'isUnauthenticated',
+        target: 'unauthenticated'
+      }
+    }
+  });
+  ```
+
+## 5.23.0
+
+### Minor Changes
+
+- [#5387](https://github.com/statelyai/xstate/pull/5387) [`53dd7f1`](https://github.com/statelyai/xstate/commit/53dd7f1abe18f430d578072086e896ea8a22ee7f) Thanks [@farskid](https://github.com/farskid)! - Adds `system.getAll` that returns a record of running actors within the system by their system id
+
+  ```ts
+  const childMachine = createMachine({});
+  const machine = createMachine({
+    // ...
+    invoke: [
+      {
+        src: childMachine,
+        systemId: 'test'
+      }
+    ]
+  });
+  const system = createActor(machine);
+
+  system.getAll(); // { test: ActorRefFrom<typeof childMachine> }
+  ```
+
+## 5.22.1
+
+### Patch Changes
+
+- [#5379](https://github.com/statelyai/xstate/pull/5379) [`98f9ddd`](https://github.com/statelyai/xstate/commit/98f9ddde939320fb698ef382f6712a0753d55ca5) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Make `actor.systemId` public:
+
+  ```ts
+  const actor = createActor(machine, { systemId: 'test' });
+  actor.systemId; // 'test'
+  ```
+
+- [#5380](https://github.com/statelyai/xstate/pull/5380) [`e7e5e44`](https://github.com/statelyai/xstate/commit/e7e5e44c3758eec4c1380bd604539406ad71115a) Thanks [@Nirajkashyap](https://github.com/Nirajkashyap)! - fix: remove 'eventType' from required fields in initialTransitionObject
+
 ## 5.22.0
 
 ### Minor Changes
@@ -944,9 +1381,7 @@
 - [#4616](https://github.com/statelyai/xstate/pull/4616) [`e8c0b15b2`](https://github.com/statelyai/xstate/commit/e8c0b15b2ed385b233c75d79def2a7e9fe99a597) Thanks [@Andarist](https://github.com/Andarist)! - `context` factories receive `self` now so you can immediately pass that as part of the input to spawned actors.
 
   ```ts
-  setup({
-    /* ... */
-  }).createMachine({
+  setup({/* ... */}).createMachine({
     context: ({ spawn, self }) => {
       return {
         childRef: spawn('child', { input: { parent: self } })
@@ -2015,10 +2450,10 @@
   - ✅ `"*"`
   - ✅ `"event.*"`
   - ✅ `"event.something.*"`
-  - ❌ ~`"event.*.something"`~
-  - ❌ ~`"event*"`~
-  - ❌ ~`"event*.some*thing"`~
-  - ❌ ~`"*.something"`~
+  - ❌ ~~`"event.*.something"`~~
+  - ❌ ~~`"event*"`~~
+  - ❌ ~~`"event*.some*thing"`~~
+  - ❌ ~~`"*.something"`~~
 
 - d3d6149c7: The interface for guard objects has changed. Notably, all guard parameters should be placed in the `params` property of the guard object:
 
@@ -2165,8 +2600,7 @@
   createMachine({
     types: {} as {
       actions:
-        | { type: 'greet'; params: { surname: string } }
-        | { type: 'poke' };
+        { type: 'greet'; params: { surname: string } } | { type: 'poke' };
     },
     entry: {
       type: 'greet',
@@ -3342,8 +3776,7 @@
   createMachine({
     types: {} as {
       actions:
-        | { type: 'greet'; params: { surname: string } }
-        | { type: 'poke' };
+        { type: 'greet'; params: { surname: string } } | { type: 'poke' };
     },
     entry: {
       type: 'greet',
@@ -4896,10 +5329,10 @@
   - ✅ `"*"`
   - ✅ `"event.*"`
   - ✅ `"event.something.*"`
-  - ❌ ~`"event.*.something"`~
-  - ❌ ~`"event*"`~
-  - ❌ ~`"event*.some*thing"`~
-  - ❌ ~`"*.something"`~
+  - ❌ ~~`"event.*.something"`~~
+  - ❌ ~~`"event*"`~~
+  - ❌ ~~`"event*.some*thing"`~~
+  - ❌ ~~`"*.something"`~~
 
 * [#1456](https://github.com/statelyai/xstate/pull/1456) [`8fcbddd51`](https://github.com/statelyai/xstate/commit/8fcbddd51d66716ab1d326d934566a7664a4e175) Thanks [@davidkpiano](https://github.com/davidkpiano)! - The interface for guard objects has changed. Notably, all guard parameters should be placed in the `params` property of the guard object:
 
@@ -5515,15 +5948,11 @@
 
   ```ts
   createMachine({
-    context: {
-      /* ... */
-    }, // ✅ This is allowed
+    context: {/* ... */}, // ✅ This is allowed
     initial: 'inner',
     states: {
       inner: {
-        context: {
-          /* ... */
-        } // ❌ This will no longer compile
+        context: {/* ... */} // ❌ This will no longer compile
       }
     }
   });
@@ -5685,8 +6114,10 @@
 - [`99bc5fb9`](https://github.com/statelyai/xstate/commit/99bc5fb9d1d7be35f4c767dcbbf5287755b306d0) [#2275](https://github.com/statelyai/xstate/pull/2275) Thanks [@davidkpiano](https://github.com/statelyai)! - The `SpawnedActorRef` TypeScript interface has been deprecated in favor of a unified `ActorRef` interface, which contains the following:
 
   ```ts
-  interface ActorRef<TEvent extends EventObject, TEmitted = any>
-    extends Subscribable<TEmitted> {
+  interface ActorRef<
+    TEvent extends EventObject,
+    TEmitted = any
+  > extends Subscribable<TEmitted> {
     send: (event: TEvent) => void;
     id: string;
     subscribe(observer: Observer<T>): Subscription;
@@ -5964,12 +6395,8 @@
     states: {
       active: {
         on: {
-          updateName: {
-            /* ... */
-          },
-          updateAge: {
-            /* ... */
-          }
+          updateName: {/* ... */},
+          updateAge: {/* ... */}
         }
       }
     }

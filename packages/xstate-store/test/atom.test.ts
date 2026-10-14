@@ -1,9 +1,35 @@
-import { createStore, createAtom, createAsyncAtom } from '../src/index.ts';
+import {
+  createStore,
+  createAtom,
+  createAtomConfig,
+  createAsyncAtom,
+  createReducerAtom
+} from '../src/index.ts';
 
 it('creates an atom', () => {
   const atom = createAtom(42);
 
   expect(atom.get()).toBe(42);
+});
+
+it('creates an atom from atom config', () => {
+  const config = createAtomConfig(42);
+  const atom = config.createAtom();
+  const otherAtom = config.createAtom();
+
+  atom.set(100);
+
+  expect(atom.get()).toBe(100);
+  expect(otherAtom.get()).toBe(42);
+});
+
+it('creates an atom from atom config and input', () => {
+  const config = createAtomConfig((input: { initialCount: number }) => {
+    return input.initialCount;
+  });
+  const atom = config.createAtom({ initialCount: 10 });
+
+  expect(atom.get()).toBe(10);
 });
 
 it('sets the value of the atom using a function', () => {
@@ -16,6 +42,76 @@ it('sets the value of the atom using a function', () => {
   atom.set((prev) => prev + 1);
 
   expect(atom.get()).toBe(2);
+});
+
+it('does not subscribe a writable atom to reads inside its updater', () => {
+  const source = createAtom(1);
+  const target = createAtom(10);
+  const observer = vi.fn();
+  const subscription = target.subscribe(observer);
+
+  target.set((previous) => previous + source.get());
+  source.set(2);
+
+  expect(target.get()).toBe(11);
+  expect(observer.mock.calls).toEqual([[11]]);
+  subscription.unsubscribe();
+});
+
+it('drains notifications before rethrowing the first subscriber error', () => {
+  const source = createAtom(0);
+  const unrelated = createAtom(0);
+  const error = new Error('subscriber failed');
+  const first = source.subscribe(() => {
+    throw error;
+  });
+  const observer = vi.fn();
+  const second = source.subscribe(observer);
+  const other = unrelated.subscribe(vi.fn());
+
+  expect(() => source.set(1)).toThrow(error);
+  expect(observer.mock.calls).toEqual([[1]]);
+  unrelated.set(1);
+  expect(observer.mock.calls).toEqual([[1]]);
+  expect(() => source.set(2)).toThrow(error);
+  expect(observer.mock.calls).toEqual([[1], [2]]);
+
+  first.unsubscribe();
+  second.unsubscribe();
+  other.unsubscribe();
+});
+
+it('rethrows undefined and still delivers reentrant notifications', () => {
+  const source = createAtom(0);
+  const nested = createAtom(0);
+  const order: string[] = [];
+  const subscriptions = [
+    nested.subscribe(() => {
+      order.push('nested');
+      throw undefined;
+    }),
+    nested.subscribe(() => {
+      order.push('nested-second');
+      throw new Error('later error');
+    }),
+    source.subscribe(() => {
+      order.push('first');
+      nested.set(1);
+    }),
+    source.subscribe(() => {
+      order.push('second');
+    })
+  ];
+  let didThrow = false;
+  try {
+    source.set(1);
+  } catch (error) {
+    didThrow = true;
+    expect(error).toBeUndefined();
+  }
+  expect(didThrow).toBe(true);
+  expect(order).toEqual(['first', 'second', 'nested', 'nested-second']);
+  subscriptions.forEach((subscription) => subscription.unsubscribe());
 });
 
 it('can set the value to undefined', () => {
@@ -61,22 +157,6 @@ it('can unsubscribe from atom changes', () => {
 it('can create a combined atom', () => {
   const nameAtom = createAtom('a');
   const numAtom = createAtom(3);
-  const combinedAtom = createAtom((read) =>
-    read(nameAtom).repeat(read(numAtom))
-  );
-
-  expect(combinedAtom.get()).toBe('aaa');
-
-  nameAtom.set('b');
-
-  expect(combinedAtom.get()).toBe('bbb');
-
-  numAtom.set(5);
-});
-
-it('can create a combined atom (get API)', () => {
-  const nameAtom = createAtom('a');
-  const numAtom = createAtom(3);
   const combinedAtom = createAtom(() => nameAtom.get().repeat(numAtom.get()));
 
   expect(combinedAtom.get()).toBe('aaa');
@@ -88,34 +168,43 @@ it('can create a combined atom (get API)', () => {
   numAtom.set(5);
 });
 
-it('works with a mix of atoms and stores', () => {
-  const countAtom = createAtom(0);
-  const store = createStore({
-    context: { name: 'David' },
-    on: {
-      nameUpdated: (context, event: { name: string }) => ({
-        ...context,
-        name: event.name
-      })
-    }
-  });
+it('allows updates to a computed dependency during a subscription callback', () => {
+  const atom = createAtom({ a: 0, b: 0, c: 0 });
 
-  const combinedAtom = createAtom(
-    (read) => read(store).context.name + ` ${read(countAtom)}`
-  );
+  const a0 = createAtom(() => atom.get().a);
+  const a1 = createAtom(() => a0.get());
+  a1.subscribe(() => atom.set((ctx) => ({ ...ctx, b: ctx.a })));
 
-  expect(combinedAtom.get()).toBe('David 0');
+  const b0 = createAtom(() => atom.get().b);
+  const b1 = createAtom(() => b0.get());
+  b1.subscribe(() => atom.set((ctx) => ({ ...ctx, c: ctx.b })));
 
-  store.send({ type: 'nameUpdated', name: 'John' });
+  atom.set((ctx) => ({ ...ctx, a: ctx.a + 1 }));
+  atom.set((ctx) => ({ ...ctx, a: ctx.a + 1 }));
+  atom.set((ctx) => ({ ...ctx, a: ctx.a + 1 }));
 
-  expect(combinedAtom.get()).toBe('John 0');
-
-  countAtom.set(1);
-
-  expect(combinedAtom.get()).toBe('John 1');
+  expect(a0.get()).toBe(3);
+  expect(a1.get()).toBe(3);
+  expect(b0.get()).toBe(3);
+  expect(b1.get()).toBe(3);
+  expect(atom.get().a).toBe(3);
+  expect(atom.get().b).toBe(3);
+  expect(atom.get().c).toBe(3);
 });
 
-it('works with a mix of atoms and stores (get API)', () => {
+it('does not loop when updating a computed dependency which affects an atoms own state', () => {
+  const count = createAtom(0);
+  const a = createAtom(() => count.get());
+
+  a.subscribe(() => count.set((val) => val + 1));
+
+  count.set((val) => val + 1);
+
+  expect(a.get()).toBe(2);
+  expect(count.get()).toBe(2);
+});
+
+it('works with a mix of atoms and stores', () => {
   const countAtom = createAtom(0);
   const store = createStore({
     context: { name: 'David' },
@@ -168,40 +257,6 @@ it('works with stores', () => {
   });
 
   const combinedAtom = createAtom(
-    (read) =>
-      read(nameStore).context.name + ` ${read(countStore).context.count}`
-  );
-
-  expect(combinedAtom.get()).toBe('David 0');
-
-  nameStore.trigger.nameUpdated({ name: 'John' });
-
-  expect(combinedAtom.get()).toBe('John 0');
-
-  countStore.trigger.increment();
-
-  expect(combinedAtom.get()).toBe('John 1');
-});
-
-it('works with stores (get API)', () => {
-  const nameStore = createStore({
-    context: { name: 'David' },
-    on: {
-      nameUpdated: (context, event: { name: string }) => ({
-        ...context,
-        name: event.name
-      })
-    }
-  });
-
-  const countStore = createStore({
-    context: { count: 0 },
-    on: {
-      increment: (context) => ({ ...context, count: context.count + 1 })
-    }
-  });
-
-  const combinedAtom = createAtom(
     () => nameStore.get().context.name + ` ${countStore.get().context.count}`
   );
 
@@ -226,13 +281,33 @@ it('works with selectors', () => {
 
   const count = store.select((ctx) => ctx.count);
 
-  const combinedAtom = createAtom((read) => 2 * read(count));
+  const combinedAtom = createAtom(() => 2 * count.get());
 
   expect(combinedAtom.get()).toBe(0);
 
   store.trigger.increment();
 
   expect(combinedAtom.get()).toBe(2);
+});
+
+it('allows sending events to the store during a selector subscription', () => {
+  const store = createStore({
+    context: { a: 0, b: 0 },
+    on: {
+      a: (context) => ({ ...context, a: context.a + 1 }),
+      b: (context) => ({ ...context, b: context.b + 1 })
+    }
+  });
+
+  const a = store.select((context) => context.a);
+  a.subscribe(() => store.trigger.b());
+
+  store.trigger.a();
+  store.trigger.a();
+  store.trigger.a();
+
+  expect(store.get().context.a).toBe(3);
+  expect(store.get().context.b).toBe(3);
 });
 
 it('works with selectors (get API)', () => {
@@ -257,19 +332,6 @@ it('works with selectors (get API)', () => {
 it('combined atoms should be read-only', () => {
   const atom1 = createAtom(0);
   const atom2 = createAtom(1);
-  const combinedAtom = createAtom((read) => read(atom1) + read(atom2));
-
-  expect(combinedAtom.get()).toBe(1);
-
-  // @ts-expect-error
-  combinedAtom.set?.(2);
-
-  expect(combinedAtom.get()).toBe(1);
-});
-
-it('combined atoms should be read-only (get API)', () => {
-  const atom1 = createAtom(0);
-  const atom2 = createAtom(1);
   const combinedAtom = createAtom(() => atom1.get() + atom2.get());
 
   expect(combinedAtom.get()).toBe(1);
@@ -280,26 +342,19 @@ it('combined atoms should be read-only (get API)', () => {
   expect(combinedAtom.get()).toBe(1);
 });
 
-it('conditionally read atoms are properly read in combined atoms', () => {
-  const atom1 = createAtom(true);
-  const atom2 = createAtom(false);
-  const activatorAtom = createAtom<'inactive' | 'active'>('inactive');
-  const combinedAtom = createAtom((read) =>
-    read(activatorAtom) === 'active' ? read(atom1) : read(atom2)
+it('combined atom getters accept only prev as an argument', () => {
+  const atom = createAtom(1);
+
+  createAtom<number>(
+    // @ts-expect-error — two-arg (read, prev) signature is no longer supported
+    (_read, _prev) => atom.get()
   );
 
-  expect(combinedAtom.get()).toBe(false);
-
-  activatorAtom.set('active');
-
-  expect(combinedAtom.get()).toBe(true);
-
-  activatorAtom.set('inactive');
-
-  expect(combinedAtom.get()).toBe(false);
+  // prev is valid
+  createAtom<number>((prev) => atom.get() + (prev ?? 0));
 });
 
-it('conditionally read atoms are properly read in combined atoms (get API)', () => {
+it('conditionally read atoms are properly read in combined atoms', () => {
   const atom1 = createAtom(true);
   const atom2 = createAtom(false);
   const activatorAtom = createAtom<'inactive' | 'active'>('inactive');
@@ -319,51 +374,6 @@ it('conditionally read atoms are properly read in combined atoms (get API)', () 
 });
 
 it('conditionally read atoms are properly unsubscribed when no longer needed', () => {
-  const atom1 = createAtom(true);
-  const activatorAtom = createAtom<'inactive' | 'active'>('active');
-  const combinedAtom = createAtom((read) =>
-    read(activatorAtom) === 'active' ? read(atom1) : {}
-  );
-
-  const vals: any[] = [];
-
-  combinedAtom.subscribe((val) => vals.push(val));
-
-  atom1.set(false);
-
-  expect(vals).toEqual([false]);
-
-  atom1.set(true);
-
-  expect(vals).toEqual([false, true]);
-
-  activatorAtom.set('inactive');
-
-  // From here, atom1 should no longer be subscribed to
-  // Without the unsubscribe logic, this would be [false, true, {}, {}, ...]
-
-  expect(vals).toEqual([false, true, {}]);
-
-  atom1.set(false);
-
-  expect(vals).toEqual([false, true, {}]);
-
-  atom1.set(true);
-
-  expect(vals).toEqual([false, true, {}]);
-
-  // Subscribing again should cause atom1 to be subscribed again
-
-  activatorAtom.set('active');
-
-  expect(vals).toEqual([false, true, {}, true]);
-
-  atom1.set(false);
-
-  expect(vals).toEqual([false, true, {}, true, false]);
-});
-
-it('conditionally read atoms are properly unsubscribed when no longer needed (get API)', () => {
   const atom1 = createAtom(true);
   const activatorAtom = createAtom<'inactive' | 'active'>('active');
   const combinedAtom = createAtom(() =>
@@ -594,7 +604,174 @@ it('Atom-specific properties should not be exposed', () => {
   store._depsTail;
 });
 
+it('computed atoms can use their previous value in the getter', () => {
+  const count = createAtom(1);
+  const accumulated = createAtom<number>((prev) => count.get() + (prev ?? 0));
+
+  expect(accumulated.get()).toBe(1); // 0 + 1 = 1
+
+  count.set(2);
+  expect(accumulated.get()).toBe(3); // 1 + 2 = 3
+
+  count.set(3);
+  expect(accumulated.get()).toBe(6); // 3 + 3 = 6
+});
+
+describe('reducer atoms', () => {
+  it('updates from current state and sent event', () => {
+    const counter = createReducerAtom(0, (state, event: number) =>
+      Math.min(10, state + event)
+    );
+
+    counter.send(13);
+
+    expect(counter.get()).toBe(10);
+  });
+
+  it('can receive arbitrary event values', () => {
+    const value = createReducerAtom(
+      '',
+      (state, event: string | number) => state + event
+    );
+
+    value.send('x');
+    value.send(1);
+
+    expect(value.get()).toBe('x1');
+  });
+
+  it('notifies subscribers when the reducer changes state', () => {
+    const counter = createReducerAtom(
+      0,
+      (state, event: number) => state + event
+    );
+    const listener = vi.fn();
+
+    counter.subscribe(listener);
+    counter.send(1);
+    counter.send(0);
+    counter.send(2);
+
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(listener).toHaveBeenNthCalledWith(1, 1);
+    expect(listener).toHaveBeenNthCalledWith(2, 3);
+  });
+
+  it('can be used by derived atoms', () => {
+    const counter = createReducerAtom(
+      0,
+      (state, event: number) => state + event
+    );
+    const doubled = createAtom(() => counter.get() * 2);
+
+    expect(doubled.get()).toBe(0);
+
+    counter.send(2);
+
+    expect(doubled.get()).toBe(4);
+  });
+
+  it('does not track atom reads inside the reducer', () => {
+    const multiplier = createAtom(2);
+    const counter = createReducerAtom(
+      1,
+      (state, event: number) => state + event * multiplier.get()
+    );
+    const listener = vi.fn();
+
+    counter.subscribe(listener);
+    counter.send(3);
+    multiplier.set(10);
+
+    expect(counter.get()).toBe(7);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('async atoms', () => {
+  it.each(['done', 'error'] as const)(
+    'should recompute after a dependency changes following %s settlement',
+    async (status) => {
+      const count = createAtom(1);
+      const error = new Error('initial failure');
+      const atom = createAsyncAtom(async () => {
+        const value = count.get();
+        if (status === 'error' && value === 1) {
+          throw error;
+        }
+        return value * 2;
+      });
+      const selected = createAtom(() => {
+        const state = atom.get();
+        return state.status === 'done' ? state.data : state.status;
+      });
+      const observer = vi.fn();
+      const subscription = selected.subscribe(observer);
+
+      await Promise.resolve();
+      expect(atom.get()).toEqual(
+        status === 'done' ? { status, data: 2 } : { status, error }
+      );
+      observer.mockClear();
+
+      count.set(2);
+      expect(atom.get()).toEqual({ status: 'pending' });
+      await Promise.resolve();
+
+      expect(atom.get()).toEqual({ status: 'done', data: 4 });
+      expect(observer.mock.calls).toEqual([['pending'], [4]]);
+      subscription.unsubscribe();
+    }
+  );
+
+  it('should recompute lazily after a settled dependency changes', async () => {
+    const count = createAtom(1);
+    const getter = vi.fn(async () => count.get() * 2);
+    const atom = createAsyncAtom(getter);
+
+    expect(getter).not.toHaveBeenCalled();
+    expect(atom.get()).toEqual({ status: 'pending' });
+    await Promise.resolve();
+    expect(atom.get()).toEqual({ status: 'done', data: 2 });
+
+    count.set(2);
+    expect(getter).toHaveBeenCalledTimes(1);
+    expect(atom.get()).toEqual({ status: 'pending' });
+    await Promise.resolve();
+    expect(atom.get()).toEqual({ status: 'done', data: 4 });
+    expect(getter).toHaveBeenCalledTimes(2);
+  });
+
+  it('should retain dependencies when the async comparator suppresses a result', async () => {
+    const count = createAtom(1);
+    const atom = createAsyncAtom(async () => count.get() % 2, {
+      compare: (previous, next) =>
+        next.status === 'pending' ||
+        (previous.status === 'done' &&
+          next.status === 'done' &&
+          previous.data === next.data)
+    });
+    const observer = vi.fn();
+    const subscription = atom.subscribe(observer);
+
+    await Promise.resolve();
+    expect(atom.get()).toEqual({ status: 'done', data: 1 });
+    observer.mockClear();
+
+    count.set(3);
+    await Promise.resolve();
+    expect(observer).not.toHaveBeenCalled();
+
+    count.set(4);
+    await Promise.resolve();
+    expect(atom.get()).toEqual({ status: 'done', data: 0 });
+    expect(observer).toHaveBeenCalledExactlyOnceWith({
+      status: 'done',
+      data: 0
+    });
+    subscription.unsubscribe();
+  });
+
   it('async atoms should work (fulfilled)', async () => {
     const atom = createAsyncAtom(async () => 'hello');
 
@@ -700,6 +877,75 @@ describe('async atoms', () => {
     expect('set' in atom).toBe(false);
   });
 
+  it('should pass an abort signal to async atoms', () => {
+    const atom = createAsyncAtom(async ({ signal }) => {
+      expect(signal).toBeInstanceOf(AbortSignal);
+      return 'hello';
+    });
+
+    expect(atom.get()).toEqual({ status: 'pending' });
+  });
+
+  it('should abort and ignore stale async atom results', async () => {
+    const count = createAtom(1);
+    const signals: AbortSignal[] = [];
+    const resolvers: Array<(value: number) => void> = [];
+    const atom = createAsyncAtom(({ signal }) => {
+      const currentCount = count.get();
+      signals.push(signal);
+
+      return new Promise<number>((resolve) => {
+        resolvers.push(resolve);
+      }).then(() => currentCount);
+    });
+
+    expect(atom.get()).toEqual({ status: 'pending' });
+
+    count.set(2);
+    expect(atom.get()).toEqual({ status: 'pending' });
+    expect(signals[0].aborted).toBe(true);
+
+    resolvers[0](1);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(atom.get()).toEqual({ status: 'pending' });
+
+    resolvers[1](2);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(atom.get()).toEqual({ status: 'done', data: 2 });
+  });
+
+  it('should ignore stale async atom errors', async () => {
+    const count = createAtom(1);
+    const rejectors: Array<(error: unknown) => void> = [];
+    const resolvers: Array<(value: number) => void> = [];
+    const atom = createAsyncAtom(({ signal }) => {
+      const currentCount = count.get();
+
+      return new Promise<number>((resolve, reject) => {
+        resolvers.push(resolve);
+        rejectors.push(reject);
+      }).then(() => {
+        if (signal.aborted) {
+          throw new Error('aborted');
+        }
+        return currentCount;
+      });
+    });
+
+    expect(atom.get()).toEqual({ status: 'pending' });
+
+    count.set(2);
+    expect(atom.get()).toEqual({ status: 'pending' });
+
+    rejectors[0](new Error('stale'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(atom.get()).toEqual({ status: 'pending' });
+
+    resolvers[1](2);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(atom.get()).toEqual({ status: 'done', data: 2 });
+  });
+
   it('should notify subscribers when async operation completes successfully', async () => {
     const log = vi.fn();
     const atom = createAsyncAtom(async () => {
@@ -760,5 +1006,42 @@ describe('async atoms', () => {
     expect(log1).toHaveBeenCalledWith({ status: 'done', data: 'multi-test' });
     expect(log2).toHaveBeenCalledTimes(1);
     expect(log2).toHaveBeenCalledWith({ status: 'done', data: 'multi-test' });
+  });
+
+  it('subscribe callback should not track dependencies from .get() calls', () => {
+    const items = createAtom<number[]>([]);
+    const ids = createAtom(() => Array.from(items.get()).sort().join(','));
+    const log = vi.fn();
+
+    ids.subscribe(() => {
+      void items.get();
+      log();
+    });
+
+    items.set([1]);
+    items.set([1]);
+    items.set([1, 2]);
+    items.set([1, 2]);
+
+    expect(log).toHaveBeenCalledTimes(2);
+  });
+
+  it('subscribe callback should not track deps on non-computed atoms', () => {
+    const ids = createAtom('');
+    const items = createAtom<number[]>([]);
+    items.subscribe((value) => ids.set(Array.from(value).sort().join(',')));
+    const log = vi.fn();
+
+    ids.subscribe(() => {
+      void items.get();
+      log();
+    });
+
+    items.set([1]);
+    items.set([1]);
+    items.set([1, 2]);
+    items.set([1, 2]);
+
+    expect(log).toHaveBeenCalledTimes(2);
   });
 });

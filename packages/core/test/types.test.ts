@@ -12,6 +12,9 @@ import {
   ActorRefFrom,
   ActorRefFromLogic,
   AnyActorLogic,
+  AnyStateMachine,
+  AnyStateNode,
+  AnyStateNodeDefinition,
   MachineContext,
   ProvidedActor,
   Spawner,
@@ -212,7 +215,7 @@ describe('output', () => {
       }
     });
 
-    const state = machine.getInitialSnapshot(null as any);
+    const state = machine.getInitialSnapshot({} as any);
 
     ((_accept: number | undefined) => {})(state.output);
     // @ts-expect-error
@@ -1730,8 +1733,8 @@ describe('invoke', () => {
           logic: typeof child;
         };
       },
+      // @ts-expect-error
       invoke: {
-        // @ts-expect-error
         id: 'child',
         src: 'child'
       }
@@ -1836,9 +1839,9 @@ describe('invoke', () => {
           id: 'myChild';
         };
       },
+      // @ts-expect-error
       invoke: {
         src: child2,
-        // @ts-expect-error
         id: 'myChild'
       }
     });
@@ -1856,9 +1859,9 @@ describe('invoke', () => {
           logic: typeof child;
         };
       },
+      // @ts-expect-error
       invoke: {
         src: 'child',
-        // @ts-expect-error
         input: 'hello'
       }
     });
@@ -1914,9 +1917,9 @@ describe('invoke', () => {
           logic: typeof child;
         };
       },
+      // @ts-expect-error
       invoke: {
         src: 'child',
-        // @ts-expect-error
         input: Math.random() > 0.5 ? 'string' : 42
       }
     });
@@ -1934,9 +1937,9 @@ describe('invoke', () => {
           logic: typeof child;
         };
       },
+      // @ts-expect-error
       invoke: {
         src: 'child',
-        // @ts-expect-error
         input: () => 'hello'
       }
     });
@@ -1973,9 +1976,9 @@ describe('invoke', () => {
           logic: typeof child;
         };
       },
+      // @ts-expect-error
       invoke: {
         src: 'child',
-        // @ts-expect-error
         input: () => (Math.random() > 0.5 ? 42 : 'hello')
       }
     });
@@ -2634,12 +2637,77 @@ describe('state.children without setup', () => {
     counterActor satisfies ActorRefFrom<typeof child1> | undefined;
 
     const someActor = createActor(machine).getSnapshot().children.someChild;
-    // @ts-expect-error
     someActor satisfies ActorRefFrom<typeof child2> | undefined;
-    someActor satisfies
-      | ActorRefFrom<typeof child1>
-      | ActorRefFrom<typeof child2>
-      | undefined;
+    // @ts-expect-error - someChild can only be child2 (child1 has a literal id)
+    someActor satisfies ActorRefFrom<typeof child1> | undefined;
+  });
+});
+
+describe('state.children with setup and multiple invoke', () => {
+  it('should type children by their specific actor when using setup with an invoke array', () => {
+    const authLogic = setup({
+      types: {
+        context: {} as { token: string | null },
+        events: {} as { type: 'auth.logout' }
+      },
+      actors: {
+        authState: fromPromise(async () => ({ token: 'tok' }))
+      }
+    }).createMachine({
+      id: 'auth',
+      context: { token: null },
+      initial: 'idle',
+      invoke: {
+        src: 'authState',
+        onDone: {
+          actions: assign({ token: ({ event }) => event.output.token })
+        }
+      },
+      states: { idle: {} }
+    });
+
+    const telemetryLogic = setup({
+      types: {
+        context: {} as { store: string | null },
+        events: {} as { type: 'telemetry.start' }
+      },
+      actors: {
+        checkConsent: fromPromise(async () => ({ status: 'granted' }))
+      }
+    }).createMachine({
+      id: 'telemetry',
+      context: { store: null },
+      initial: 'idle',
+      states: { idle: {} }
+    });
+
+    const rootMachine = setup({
+      types: {
+        context: {} as { value: number }
+      },
+      actors: {
+        auth: authLogic,
+        telemetry: telemetryLogic
+      }
+    }).createMachine({
+      context: { value: 0 },
+      invoke: [
+        { id: 'auth', systemId: 'auth', src: 'auth' },
+        { id: 'telemetry', systemId: 'telemetry', src: 'telemetry' }
+      ]
+    });
+
+    const snapshot = createActor(rootMachine).getSnapshot();
+
+    const authChild = snapshot.children.auth;
+    authChild!.getSnapshot().context.token satisfies string | null;
+    // @ts-expect-error - token is string | null, not number
+    authChild!.getSnapshot().context.token satisfies number;
+
+    const telemetryChild = snapshot.children.telemetry;
+    telemetryChild!.getSnapshot().context.store satisfies string | null;
+    // @ts-expect-error - store is string | null, not number
+    telemetryChild!.getSnapshot().context.store satisfies number;
   });
 });
 
@@ -2929,9 +2997,9 @@ describe('actions', () => {
       types: {} as {
         actions: { type: 'greet'; params: { name: string } } | { type: 'poke' };
       },
+      // @ts-expect-error
       entry: {
         type: 'greet',
-        // @ts-expect-error
         params: {}
       }
     });
@@ -3102,9 +3170,9 @@ describe('actions', () => {
           | { type: 'greet'; params: { surname: string } }
           | { type: 'poke' };
       },
+      // @ts-expect-error
       entry: {
         type: 'greet',
-        // @ts-expect-error
         params: () => ({
           surname: 100
         })
@@ -3183,9 +3251,9 @@ describe('enqueueActions', () => {
         actions: { type: 'greet'; params: { name: string } } | { type: 'poke' };
       },
       entry: enqueueActions(({ enqueue }) => {
+        // @ts-expect-error
         enqueue({
           type: 'greet',
-          // @ts-expect-error
           params: {}
         });
       })
@@ -4619,4 +4687,123 @@ it('Actor<T> should be assignable to ActorRefFromLogic<T>', () => {
   }
 
   new ActorThing(logic);
+});
+
+it('AnyStateNode should keep the state nodes of an AnyStateMachine unwidened', () => {
+  // Assignability cannot express this: `any` assigns in both directions, so a state node
+  // read off an `AnyStateMachine` satisfies `AnyStateNode` either way. What differs is
+  // whether the meta parameters stay `any` — if they fall back to their `MetaObject`
+  // default, tooling that tracks `any` (such as `@typescript-eslint`) reports every such
+  // node as an unsafe argument.
+  type IsAny<T> = 0 extends 1 & T ? true : false;
+  type MetaOf<T> = T extends { meta?: infer TMeta } ? TMeta : never;
+
+  const machineNodeMetaIsAny: IsAny<MetaOf<AnyStateMachine['root']>> = true;
+  const anyStateNodeMetaIsAny: IsAny<MetaOf<AnyStateNode>> = true;
+  const anyStateNodeDefinitionMetaIsAny: IsAny<MetaOf<AnyStateNodeDefinition>> =
+    true;
+
+  // Both aliases pass `any` to the transition metadata parameter as well, which is a
+  // separate slot rather than a fallback to `TStateMeta` once it is written explicitly.
+  const anyStateNodeTransitionMetaIsAny: IsAny<
+    MetaOf<AnyStateNode['definition']['transitions'][number]>
+  > = true;
+  const anyStateNodeDefinitionTransitionMetaIsAny: IsAny<
+    MetaOf<AnyStateNodeDefinition['transitions'][number]>
+  > = true;
+
+  machineNodeMetaIsAny satisfies true;
+  anyStateNodeMetaIsAny satisfies true;
+  anyStateNodeDefinitionMetaIsAny satisfies true;
+  anyStateNodeTransitionMetaIsAny satisfies true;
+  anyStateNodeDefinitionTransitionMetaIsAny satisfies true;
+});
+
+it('generic graph and snapshot containers preserve any metadata', () => {
+  type IsAny<T> = 0 extends 1 & T ? true : false;
+  type NodeMetaIsAny<T extends import('../src').AnyStateNode> = [
+    IsAny<T['meta']>,
+    IsAny<T['definition']['transitions'][number]['meta']>
+  ];
+
+  // Ordinary assignability cannot catch this regression: any assigns both ways.
+  const history: NodeMetaIsAny<
+    import('../src').AnyHistoryValue[string][number]
+  > = [true, true];
+  const config: NodeMetaIsAny<
+    import('../src').AnyStateConfig['_nodes'][number]
+  > = [true, true];
+  const snapshot: NodeMetaIsAny<
+    import('../src').AnyMachineSnapshot['_nodes'][number]
+  > = [true, true];
+  const graphNode: NodeMetaIsAny<
+    import('../src/graph').DirectedGraphNode['stateNode']
+  > = [true, true];
+  const graphTransition: IsAny<
+    import('../src/graph').DirectedGraphEdge['transition']['meta']
+  > = true;
+  const transitions: IsAny<
+    import('../src').Transitions<any, any>[number]['meta']
+  > = true;
+  const iterable: NodeMetaIsAny<
+    Parameters<
+      typeof import('../src/stateUtils').getStateValue
+    >[1] extends Iterable<infer T>
+      ? T
+      : never
+  > = [true, true];
+  const historyNode: NodeMetaIsAny<import('../src').HistoryStateNode<any>> = [
+    true,
+    true
+  ];
+  const normalized: NodeMetaIsAny<
+    Exclude<
+      NonNullable<
+        ReturnType<typeof import('../src/utils').normalizeTarget>
+      >[number],
+      string
+    >
+  > = [true, true];
+  const formatted: IsAny<
+    ReturnType<
+      typeof import('../src/stateUtils').formatTransitions
+    > extends Map<string, (infer T)[]>
+      ? T extends { meta?: infer M }
+        ? M
+        : never
+      : never
+  > = true;
+  const transitioned: IsAny<
+    NonNullable<
+      ReturnType<typeof import('../src/stateUtils').transitionNode>
+    >[number]['meta']
+  > = true;
+  const candidates: IsAny<
+    ReturnType<typeof import('../src/stateUtils').getCandidates>[number]['meta']
+  > = true;
+  const delayed: IsAny<
+    ReturnType<
+      typeof import('../src/stateUtils').getDelayedTransitions
+    >[number]['meta']
+  > = true;
+
+  expect(
+    [
+      history,
+      config,
+      snapshot,
+      graphNode,
+      graphTransition,
+      transitions,
+      iterable,
+      historyNode,
+      normalized,
+      formatted,
+      transitioned,
+      candidates,
+      delayed
+    ]
+      .flat()
+      .every(Boolean)
+  ).toBe(true);
 });

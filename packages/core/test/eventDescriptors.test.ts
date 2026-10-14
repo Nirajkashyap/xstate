@@ -1,4 +1,4 @@
-import { createMachine, createActor } from '../src/index';
+import { createMachine, createActor, setup, assertEvent } from '../src/index';
 
 describe('event descriptors', () => {
   it('should fallback to using wildcard transition definition (if specified)', () => {
@@ -101,6 +101,29 @@ describe('event descriptors', () => {
 
     const service = createActor(machine).start();
     service.send({ type: 'foo.bar.baz' });
+    expect(service.getSnapshot().value).toBe('pass');
+  });
+
+  it('should fall back to wildcard descriptor when exact descriptor guard fails', () => {
+    const machine = createMachine({
+      initial: 'A',
+      states: {
+        A: {
+          on: {
+            'foo.bar': {
+              guard: () => false,
+              target: 'fail'
+            },
+            'foo.*': 'pass'
+          }
+        },
+        fail: {},
+        pass: {}
+      }
+    });
+
+    const service = createActor(machine).start();
+    service.send({ type: 'foo.bar' });
     expect(service.getSnapshot().value).toBe('pass');
   });
 
@@ -353,5 +376,84 @@ describe('event descriptors', () => {
         ],
       ]
     `);
+  });
+
+  it('should allow assertEvent to use partial descriptors', () => {
+    type FeedbackEvents =
+      | {
+          type: 'FEEDBACK.MESSAGE';
+          message: string;
+        }
+      | {
+          type: 'FEEDBACK.RATE';
+          rate: number;
+        }
+      | { type: 'OTHER' };
+
+    const handleEventSpy = vi.fn();
+    const machine = setup({
+      types: {
+        events: {} as FeedbackEvents
+      },
+      actions: {
+        handleEvent: ({ event }: { event: FeedbackEvents }) => {
+          assertEvent(event, 'FEEDBACK.*');
+
+          if (event.type === 'FEEDBACK.MESSAGE') {
+            event.message satisfies string;
+          } else {
+            event.rate satisfies number;
+          }
+
+          handleEventSpy(event);
+        }
+      }
+    }).createMachine({
+      initial: 'listening',
+      states: {
+        listening: {
+          on: {
+            'FEEDBACK.*': {
+              actions: 'handleEvent'
+            }
+          }
+        }
+      }
+    });
+
+    const actor = createActor(machine).start();
+    actor.send({ type: 'FEEDBACK.MESSAGE', message: 'hello' });
+    actor.send({ type: 'FEEDBACK.RATE', rate: 5 });
+
+    expect(handleEventSpy).toHaveBeenCalledTimes(2);
+    expect(handleEventSpy).toHaveBeenNthCalledWith(1, {
+      type: 'FEEDBACK.MESSAGE',
+      message: 'hello'
+    });
+    expect(handleEventSpy).toHaveBeenNthCalledWith(2, {
+      type: 'FEEDBACK.RATE',
+      rate: 5
+    });
+  });
+
+  it('should throw if assertEvent partial descriptor does not match', () => {
+    type FeedbackEvents =
+      | {
+          type: 'FEEDBACK.MESSAGE';
+          message: string;
+        }
+      | {
+          type: 'FEEDBACK.RATE';
+          rate: number;
+        }
+      | { type: 'OTHER' };
+
+    const nonFeedbackEvent = { type: 'OTHER' } as FeedbackEvents;
+
+    expect(() =>
+      assertEvent(nonFeedbackEvent, 'FEEDBACK.*')
+    ).toThrowErrorMatchingInlineSnapshot(
+      `[Error: Expected event {"type":"OTHER"} to have type matching "FEEDBACK.*"]`
+    );
   });
 });

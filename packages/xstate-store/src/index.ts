@@ -1,19 +1,35 @@
-export { shallowEqual } from './shallowEqual';
-export { fromStore } from './fromStore';
+export { shallowEqual } from './shallowEqual.ts';
+export { fromStore } from './fromStore.ts';
+export { createStore, createStoreConfig, createStoreLogic } from './store.ts';
 export {
-  createStore,
-  createStoreWithProducer,
-  createStoreConfig
-} from './store';
-export { createAtom, createAsyncAtom } from './atom';
+  createAtom,
+  createAtomConfig,
+  createAsyncAtom,
+  createSourceAtom,
+  createReducerAtom
+} from './atom.ts';
+export type { AsyncAtomOptions, AsyncAtomState } from './atom.ts';
+export type { StandardSchemaV1 } from './schema.ts';
 export type {
   EventPayloadMap,
   ExtractEvents,
+  StandardSchemaMap,
+  InferSchemaOutput,
+  InferSchemaPayloadMap,
+  StoreSchemas,
+  ResolveStoreContext,
+  ResolveStoreEventPayloadMap,
+  ResolveStoreEmittedPayloadMap,
   StoreEffect,
+  StoreEffectEnqueue,
+  EnqueueObject,
+  TriggerObject,
+  CanObject,
   StoreAssigner,
   StoreSnapshot,
   Store,
   StoreConfig,
+  StoreContext,
   AnyStore,
   SnapshotFromStore,
   EventFromStore,
@@ -29,13 +45,29 @@ export type {
   ActorRefLike,
   Selector,
   Selection,
+  StoreSelectorsConfig,
+  ResolvedStoreSelectors,
+  StoreWithSelectors,
+  StoreLogicCreator,
+  AnyStoreLogicCreator,
+  StoreFromStoreLogicCreator,
+  InputFromStoreLogicCreator,
   Readable,
   BaseAtom,
   Atom,
+  AtomConfig,
+  AnyAtomConfig,
+  ValueFromAtomConfig,
+  InputFromAtomConfig,
+  ReducerAtom,
   AtomOptions,
+  SourceAtomConfig,
   AnyAtom,
   ReadonlyAtom,
+  AnyStoreConfig,
   EventFromStoreConfig,
   EmitsFromStoreConfig,
-  ContextFromStoreConfig
-} from './types';
+  ContextFromStoreConfig,
+  StoreFromStoreConfig,
+  StoreExtension
+} from './types.ts';
